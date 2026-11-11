@@ -16,6 +16,7 @@
 | 用户权限 | 当前用户在 `docker` 组 | `id -nG` |
 | 资源 | 建议 ≥ 4 GB 内存、≥ 10 GB 磁盘 | `free -h`、`df -h /` |
 | 端口 | 6443 / 8080 / 8443 / 5000 空闲 | `ss -lntp` |
+| inotify | `max_user_instances` ≥ 8192（机器上还跑着别的 kind/k8s 时必须） | `sysctl fs.inotify.max_user_instances` |
 
 当前机器实测：Ubuntu 22.04.5、内核 6.18 WSL2、Docker 29.1.3、2 vCPU / 3.8 GB 内存，可正常运行 1 server + 1 agent。
 
@@ -71,6 +72,29 @@ systemctl is-enabled docker
 ```
 
 `scripts/install.sh` 会自动执行 `systemctl enable docker`。WSL 没有“开机自启”概念，只有 WSL 发行版被启动时 systemd 才会拉起 Docker；见 [operations](03-operations.md#wsl-重启后集群还在吗)。
+
+### 1.4 抬升内核 inotify 限制（重要）
+
+k3s 的 containerd 在容器里启动时，CRI 插件和 kube-apiserver 都要创建 inotify 实例。内核对**每个 UID** 只有 128 个实例额度，而容器内的 root 就是宿主 root——机器上任何以 root 运行的容器（其他 kind 集群、构建容器、watch 类工具）都共享这份额度。
+
+额度耗尽时，containerd 的 CRI 插件加载失败（`failed to create fsnotify watcher: too many open files`），kubelet 起不来，k3d 只会看到“agent 注册超时”然后回滚。排查与完整日志见 [坑 21](04-pitfalls.md#坑-21集群创建回滚agent-报注册超时其实是内核-inotify-实例耗尽)。
+
+```bash
+sudo tee /etc/sysctl.d/99-k3d-inotify.conf >/dev/null <<'EOF'
+# k3d/k3s: containerd CRI plugin and kube-apiserver need inotify instances.
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 2097152
+fs.inotify.max_queued_events = 65536
+EOF
+
+sudo sysctl --system
+sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches
+# 期望：8192 / 2097152
+```
+
+这些是上限而不是预分配，只有真正存在的 watch 才占内核内存。文件放在 `/etc/sysctl.d/` 下，WSL 里由 `systemd-sysctl` 在每次发行版启动时自动应用，不需要重复执行。
+
+> 单集群、机器上没有其他 k8s 时可跳过；一旦出现“集群创建到一半回滚”，先查这一项。
 
 ---
 

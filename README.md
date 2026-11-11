@@ -333,9 +333,10 @@ make uninstall ARGS="--purge --keep-images"
 | 节点日志 `dial tcp ... i/o timeout` | 节点无法访问 Docker Hub | 预导入镜像，或给节点配代理 |
 | `kubectl top` 报 Metrics API 不可用 | metrics-server 刚启动/没镜像 | 等 60s，或检查镜像导入 |
 | flannel `subnet.env` 不存在 | 节点启动竞态 | 等 30–60s，通常自愈 |
+| `make up` 回滚，agent 报 `context deadline exceeded` | 内核 inotify 实例被其他容器占满，containerd 的 CRI 插件没加载 | 抬高 `fs.inotify.max_user_instances`（见 [坑 21](docs/04-pitfalls.md#坑-21集群创建回滚agent-报注册超时其实是内核-inotify-实例耗尽)） |
 | WSL 卡顿/OOM | WSL 内存太小 | `.wslconfig` 调 memory，设 resources limits |
 
-完整 20 个坑、错误日志和修复命令见 [docs/04-pitfalls.md](docs/04-pitfalls.md)。
+完整 21 个坑、错误日志和修复命令见 [docs/04-pitfalls.md](docs/04-pitfalls.md)。
 
 ---
 
@@ -357,7 +358,7 @@ make uninstall ARGS="--purge --keep-images"
 | [docs/01-install.md](docs/01-install.md) | 前置条件、systemd、Docker、代理、安装、镜像清单、创建、验证 |
 | [docs/02-usage.md](docs/02-usage.md) | Ingress、本地 registry、PVC、Helm、多集群、Windows 访问 |
 | [docs/03-operations.md](docs/03-operations.md) | 启停、WSL 重启、资源、端口、升级、备份、日志、安全 |
-| [docs/04-pitfalls.md](docs/04-pitfalls.md) | 20 个实际踩坑与排错 |
+| [docs/04-pitfalls.md](docs/04-pitfalls.md) | 21 个实际踩坑与排错 |
 | [docs/05-uninstall.md](docs/05-uninstall.md) | 三档卸载、手工清理、验证残留、重装 |
 
 外部参考：

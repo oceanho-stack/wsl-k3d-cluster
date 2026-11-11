@@ -783,6 +783,112 @@ kubectl -n kube-system delete pod -l app=local-path-provisioner 2>/dev/null || t
 
 ---
 
+## 坑 21：集群创建回滚，agent 报“注册超时”，其实是内核 inotify 实例耗尽
+
+### 症状
+
+`make up` 跑了几分钟，节点容器都起来了，最后却整段回滚：
+
+```text
+ERRO[0302] Failed Cluster Start: Failed to add one or more agents:
+Node k3d-dev-agent-0 failed to get ready: error waiting for log line
+`successfully registered node` from node 'k3d-dev-agent-0':
+stopped returning log lines: context deadline exceeded
+ERRO[0302] Failed to create cluster >>> Rolling Back
+FATA[0304] Cluster creation FAILED, all changes have been rolled back!
+```
+
+节点容器里的日志则一直刷：
+
+```text
+level=info  msg="Waiting for containerd startup: rpc error: code = Unimplemented
+desc = unknown service runtime.v1.RuntimeService"
+```
+
+`containerd.log`（节点内 `/var/lib/rancher/k3s/agent/containerd/containerd.log`）里是真正的错误：
+
+```text
+level=warning msg="failed to load plugin" error="failed to create CRI service:
+failed to create cni conf monitor for default: failed to create fsnotify watcher:
+too many open files" id=io.containerd.grpc.v1.cri type=io.containerd.grpc.v1
+level=info    msg="containerd successfully booted in 0.035690s"
+```
+
+### 原因
+
+k3s 的 containerd 在容器内启动时，CRI 插件（`cni conf monitor`）和 kube-apiserver 都要创建 inotify 实例。内核给**每个 UID** 的实例数是有上限的，默认只有 **128**，而容器里的 root 就是宿主 root——所以这台机器上所有以 root 运行的容器（其他 kind 集群、构建容器、watch 类工具）共享同一个配额。
+
+配额被占满时，`inotify_init` 返回 `EMFILE`，CRI 插件加载失败但 containerd 进程本身照常启动，于是：
+
+```text
+CRI 插件没加载 → kubelet 起不来 → 节点不上报 → agent 不注册 → k3d 超时回滚
+```
+
+和镜像、代理、网络都没关系。本机实测 root 侧已占 **127/128**（两个 kind 集群 + 若干容器），只剩 1 个实例，刚好不够 k3s 用。
+
+### 排查
+
+```bash
+# 1. 看限制
+sysctl fs.inotify.max_user_instances
+
+# 2. 数实际占用（要 root，否则读不到容器内进程的 fd）
+sudo bash -c '
+for pid in $(ls /proc | grep -E "^[0-9]+$"); do
+  for fd in /proc/$pid/fd/*; do
+    readlink "$fd" 2>/dev/null
+  done
+done | grep -c anon_inode:inotify'
+```
+
+占用接近上限（例如 120+/128）就是这个问题。
+
+> 默认的 rollback 会把节点容器全删掉，日志一起没了。要保留现场用：
+>
+> ```bash
+> k3d cluster create dev --no-rollback --timeout 180s   # 或 K3D_CREATE_EXTRA_ARGS="--no-rollback"
+> docker logs k3d-dev-agent-0 2>&1 | tail -40
+> docker exec k3d-dev-server-0 tail -40 \
+>   /var/lib/rancher/k3s/agent/containerd/containerd.log
+> ```
+
+### 解决
+
+抬高三项限制并持久化（放在 `/etc/sysctl.d/`，WSL 里 systemd 启动时由 `systemd-sysctl` 自动应用）：
+
+```bash
+sudo tee /etc/sysctl.d/99-k3d-inotify.conf >/dev/null <<'EOF'
+# k3d/k3s: containerd CRI plugin and kube-apiserver need inotify instances.
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 2097152
+fs.inotify.max_queued_events = 65536
+EOF
+
+sudo sysctl --system
+sysctl fs.inotify.max_user_instances     # 期望 8192
+```
+
+这些值是**上限不是预分配**：只有真正创建出来的 watch 才占内核内存，多个本地集群（k3d + kind）同时跑也够用。
+
+然后删掉半成品集群重建：
+
+```bash
+k3d cluster delete dev
+make up
+```
+
+### 补充：镜像导入成功，Pod 仍 ErrImagePull
+
+同一类“看起来是镜像问题、其实是节点缓存”的情况：`crictl images` 里已经能看到镜像，但 kubelet 仍去 Docker Hub 拉取并超时。运行期 `k3d image import` 之后重启一次节点，让 kubelet 重建镜像缓存：
+
+```bash
+k3d cluster restart dev --wait
+```
+
+`make up` 里“先 import 系统镜像、再 `k3d cluster restart`”的顺序就是为此设计的。
+
+---
+
 ## 仍然解决不了？
 
 收集这些信息再查：
