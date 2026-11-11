@@ -139,6 +139,97 @@ as_root() {
   fi
 }
 
+# ----- kernel limits ---------------------------------------------------------
+# k3s containerd (CRI "cni conf monitor") and kube-apiserver create inotify
+# instances, and the per-UID budget is shared with every root container on the
+# machine. With the stock 128 the CRI plugin fails to load
+# ("failed to create fsnotify watcher: too many open files") and k3d only sees
+# "agent failed to get ready ... context deadline exceeded" before rolling back.
+# See docs/04-pitfalls.md 坑 21.
+ensure_inotify_limits() {
+  local want_i="${INOTIFY_MAX_USER_INSTANCES:-8192}"
+  local want_w="${INOTIFY_MAX_USER_WATCHES:-2097152}"
+  local want_q="${INOTIFY_MAX_QUEUED_EVENTS:-65536}"
+  local f="${INOTIFY_SYSCTL_FILE:-/etc/sysctl.d/99-k3d-inotify.conf}"
+  local cur_i cur_w cur_q desired tmp
+
+  cur_i="$(sysctl -n fs.inotify.max_user_instances 2>/dev/null || true)"
+  cur_w="$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || true)"
+  cur_q="$(sysctl -n fs.inotify.max_queued_events 2>/dev/null || true)"
+  [[ "$cur_i" =~ ^[0-9]+$ ]] || cur_i=0
+  [[ "$cur_w" =~ ^[0-9]+$ ]] || cur_w=0
+  [[ "$cur_q" =~ ^[0-9]+$ ]] || cur_q=0
+
+  if (( cur_i >= want_i && cur_w >= want_w && cur_q >= want_q )); then
+    # Values are fine for this boot; just make sure the managed file keeps them
+    # across WSL restarts. Never lower a value that is already higher.
+    desired="# Managed by k3d-on-wsl (scripts/install.sh). Do not edit.
+# k3s containerd (CRI cni-conf monitor) and kube-apiserver create inotify
+# instances; the per-UID limit is shared with every root container on this box.
+# These are caps, not reservations: only watches that exist use kernel memory.
+fs.inotify.max_user_instances = ${want_i}
+fs.inotify.max_user_watches = ${want_w}
+fs.inotify.max_queued_events = ${want_q}"
+    tmp="$(mktemp)"
+    printf '%s\n' "$desired" >"$tmp"
+    if [[ -f "$f" ]] && cmp -s "$tmp" "$f"; then
+      rm -f "$tmp"
+    elif ( as_root install -D -m 0644 "$tmp" "$f" ) 2>/dev/null; then
+      rm -f "$tmp"
+      log "Wrote $f (takes effect from the next WSL boot)"
+    else
+      rm -f "$tmp"
+      warn "Could not write ${f}; limits will not survive a WSL restart. See docs/01-install.md 1.4."
+    fi
+    ok "inotify limits ok (instances=${cur_i} watches=${cur_w} queued=${cur_q})"
+    return 0
+  fi
+
+  warn "inotify limits are low for k3s: instances=${cur_i} (want ${want_i}), watches=${cur_w} (want ${want_w}), queued=${cur_q} (want ${want_q})."
+  warn "With the stock 128, containerd's CRI plugin can fail to load and the cluster create rolls back (docs/04-pitfalls.md, 坑 21)."
+
+  desired="# Managed by k3d-on-wsl (scripts/install.sh). Do not edit.
+# k3s containerd (CRI cni-conf monitor) and kube-apiserver create inotify
+# instances; the per-UID limit is shared with every root container on this box.
+# These are caps, not reservations: only watches that exist use kernel memory.
+fs.inotify.max_user_instances = ${want_i}
+fs.inotify.max_user_watches = ${want_w}
+fs.inotify.max_queued_events = ${want_q}"
+
+  tmp="$(mktemp)"
+  printf '%s\n' "$desired" >"$tmp"
+
+  if [[ -f "$f" ]] && cmp -s "$tmp" "$f"; then
+    rm -f "$tmp"
+    log "sysctl file already matches: $f"
+  else
+    if ! ( as_root install -D -m 0644 "$tmp" "$f" ) 2>/dev/null; then
+      rm -f "$tmp"
+      warn "Could not write ${f}; raise the limits manually:"
+      warn "  sudo bash -c 'printf \"%s\\n\" ... > ${f} && sysctl --system'   (see docs/01-install.md 1.4)"
+      return 1
+    fi
+    rm -f "$tmp"
+    log "Wrote $f"
+  fi
+
+  if ! ( as_root sysctl --system ) >/dev/null 2>&1; then
+    warn "Could not apply sysctl settings (needs root). Run: sudo sysctl --system"
+    return 1
+  fi
+
+  cur_i="$(sysctl -n fs.inotify.max_user_instances 2>/dev/null || echo 0)"
+  cur_w="$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo 0)"
+  cur_q="$(sysctl -n fs.inotify.max_queued_events 2>/dev/null || echo 0)"
+  if (( cur_i >= want_i && cur_w >= want_w && cur_q >= want_q )); then
+    ok "inotify limits raised (instances=${cur_i} watches=${cur_w} queued=${cur_q})"
+    return 0
+  fi
+
+  warn "inotify limits still below target (instances=${cur_i} watches=${cur_w} queued=${cur_q}); check /etc/sysctl.conf and other /etc/sysctl.d/*.conf files."
+  return 1
+}
+
 # ----- docker proxy ---------------------------------------------------------
 is_docker_desktop() {
   docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'Docker Desktop'

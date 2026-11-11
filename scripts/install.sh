@@ -108,6 +108,11 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+# k3s containerd's CRI plugin cannot start if the inotify instance budget is
+# exhausted by other root containers (kind clusters, builds). Idempotent: only
+# touched when the current limits are below the configured targets.
+ensure_inotify_limits || warn "Cluster creation may fail until the inotify limits are raised (docs/04-pitfalls.md, 坑 21)."
+
 configure_docker_proxy
 
 if ! command -v kubectl >/dev/null 2>&1; then

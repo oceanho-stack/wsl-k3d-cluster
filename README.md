@@ -51,7 +51,7 @@ cd /mnt/d/projects/oceanho-stack-infra
 cp config/cluster.env.local.example config/cluster.env.local
 vi config/cluster.env.local
 
-# 1) 安装 k3d（固定版本 + 校验和）
+# 1) 安装 k3d（固定版本 + 校验和；顺带把内核 inotify 限制抬到够用的值）
 make install
 
 # 2) 预拉全部基础镜像（第一次需要网络，约 1 GB）
@@ -158,7 +158,7 @@ WSL2 (Ubuntu 22.04, systemd)
 | 命令 | 作用 |
 |---|---|
 | `make help` | 查看所有目标 |
-| `make install` | 安装固定版本 k3d，启用 Docker，配置代理 |
+| `make install` | 安装固定版本 k3d，启用 Docker，配置代理，抬升内核 inotify 限制（幂等） |
 | `make images` | 拉取集群需要的全部镜像 |
 | `make save-images` | 导出 `images/k3d-base-<k3s>.tar` |
 | `make up` | 不存在则创建；存在则启动并等待 Ready |

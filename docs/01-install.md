@@ -79,6 +79,8 @@ k3s 的 containerd 在容器里启动时，CRI 插件和 kube-apiserver 都要�
 
 额度耗尽时，containerd 的 CRI 插件加载失败（`failed to create fsnotify watcher: too many open files`），kubelet 起不来，k3d 只会看到“agent 注册超时”然后回滚。排查与完整日志见 [坑 21](04-pitfalls.md#坑-21集群创建回滚agent-报注册超时其实是内核-inotify-实例耗尽)。
 
+`scripts/install.sh` 会自动处理这一步：先读当前值，低于目标才写 `/etc/sysctl.d/99-k3d-inotify.conf` 并执行 `sysctl --system`，已经够就跳过，可反复执行。想手工做或调数值时，等价命令是：
+
 ```bash
 sudo tee /etc/sysctl.d/99-k3d-inotify.conf >/dev/null <<'EOF'
 # k3d/k3s: containerd CRI plugin and kube-apiserver need inotify instances.
@@ -92,9 +94,11 @@ sysctl fs.inotify.max_user_instances fs.inotify.max_user_watches
 # 期望：8192 / 2097152
 ```
 
+目标值可以在 `config/cluster.env` 里用 `INOTIFY_MAX_USER_INSTANCES` / `INOTIFY_MAX_USER_WATCHES` / `INOTIFY_MAX_QUEUED_EVENTS` 覆盖，配置文件路径用 `INOTIFY_SYSCTL_FILE`（默认 `/etc/sysctl.d/99-k3d-inotify.conf`）。手工改过之后，`install.sh` 只会读取当前值判断是否达标，不会覆盖你的数值。
+
 这些是上限而不是预分配，只有真正存在的 watch 才占内核内存。文件放在 `/etc/sysctl.d/` 下，WSL 里由 `systemd-sysctl` 在每次发行版启动时自动应用，不需要重复执行。
 
-> 单集群、机器上没有其他 k8s 时可跳过；一旦出现“集群创建到一半回滚”，先查这一项。
+> 单集群、机器上没有其他 k8s 时，128 也可能够用；一旦出现“集群创建到一半回滚”，先查这一项。注意只有 `install.sh` 会做这个检查，`up.sh` 不会自动改内核参数。
 
 ---
 
