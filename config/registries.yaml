@@ -1,0 +1,14 @@
+# containerd registry mirrors used by the k3s nodes.
+# k3d mounts this file into every node via `--registry-config`.
+#
+# Why: in mainland China, k3s nodes cannot reach registry-1.docker.io and
+# system pods get stuck on `rancher/mirrored-pause` / coredns / traefik pulls.
+# The first endpoint is a Docker Hub mirror; the second is the upstream fallback.
+#
+# You can add more mirrors here (ghcr.io, quay.io, registry.k8s.io) if your
+# workloads need them. See docs/PITFALLS.md for examples.
+mirrors:
+  docker.io:
+    endpoint:
+      - https://docker.m.daocloud.io
+      - https://registry-1.docker.io

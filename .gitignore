@@ -1,0 +1,10 @@
+# local / machine-specific
+config/cluster.env.local
+
+# generated image bundles
+images/*.tar
+images/cache/
+
+# logs and temp files
+*.log
+.tmp/
